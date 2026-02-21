@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class LLMSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    llm_provider: str = Field(default="openai", alias="LLM_PROVIDER")
+    llm_provider: str = Field(default="ollama", alias="LLM_PROVIDER")
     llm_fallback_provider: str = Field(default="", alias="LLM_FALLBACK_PROVIDER")
     llm_temperature: float = Field(default=0.0, alias="LLM_TEMPERATURE")
 
