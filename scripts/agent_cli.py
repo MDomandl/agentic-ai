@@ -8,17 +8,22 @@ from chat_agent.agent.types import AgentStatus
 
 def main() -> int:
     tools = {"echo": tool_echo, "add": tool_add}
-    cfg = AgentConfig(max_iters=10, risk_level=RiskLevel.LOW, allow_tools=True)
+    cfg = AgentConfig(max_iters=50, risk_level=RiskLevel.LOW, allow_tools=True)
     agent = AgentLoop(tools=tools, cfg=cfg)
 
     goal = input("Ziel (goal) > ").strip()
     state = agent.start(goal)
+    user_input = goal
 
     print("\n--- Agent Loop --- (Strg+C zum Abbruch)\n")
 
     # Interaktiv: wenn Agent needs_input liefert, fragen wir den User.
     while True:
-        res = agent.step(state, user_input=None)
+        res = agent.step(state, user_input=user_input)
+
+        print(f"res.status > {res.status} \n")
+        print(f"state.iters > {res.state.iters} \n")
+        print(f"res.status > {res.state.memory} \n")
 
         if res.status in (AgentStatus.RESPONDED, AgentStatus.DONE, AgentStatus.ERROR):
             print(f"Agent > {res.message}")
@@ -37,16 +42,8 @@ def main() -> int:
             state = res.state
             continue
 
-        print(f"Agent > {res.message}")
-        user = input("Du > ").strip()
-        state = res.state
-        res2 = agent.step(state, user_input=user)
-        state = res2.state
-        if res2.status in (AgentStatus.RESPONDED, AgentStatus.DONE, AgentStatus.ERROR):
-            print(f"Agent > {res2.message}")
-            if res2.status in ("done", "error"):
-                return 0 if res2.status == "done" else 2
-            return 0
+        #print(f"Agent > {res.message}")
+        user_input = input("Du > ").strip()
 
 
 if __name__ == "__main__":
