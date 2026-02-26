@@ -21,7 +21,7 @@ def test_agentloop_tool_then_respond():
 
     st = agent.start("Rechne 12.5 + 7.25 aus und sag mir das Ergebnis.")
     r1 = agent.step(st)
-    assert r1.status == AgentStatus.NEEDS_INPUT  # Tool wurde ausgeführt → Weiter...
+    assert r1.status == AgentStatus.CONTINUE  # Tool wurde ausgeführt → Weiter...
     assert any("TOOL_OK add: 19.75" in o for o in r1.state.observations)
 
     r2 = agent.step(r1.state)

@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, Dict, Optional, Tuple, List, TYPE_CHECKING
+from typing import Any, Callable, Dict, Optional, Tuple, List
 
 from pydantic import BaseModel, Field
 
+from chat_agent.agent.tools_builtin import AddArgs, EchoArgs
 from chat_agent.llm.structured import parse_structured
 from chat_agent.policy.risk import RiskLevel, decide
 from chat_agent.agent.types import AgentState, AgentResult, AgentStatus
@@ -49,18 +50,48 @@ def _trim_memory(memory: List[Tuple[str, str]], max_chars: int) -> List[Tuple[st
 def _build_system_prompt(tools: Dict[str, ToolFn]) -> str:
     tool_list = ", ".join(sorted(tools.keys())) if tools else "(keine)"
     return (
-        "Du bist ein Agenten-Controller. Du gibst AUSSCHLIESSLICH JSON gemäß Schema zurück.\n"
-        "Du steuerst einen Loop (decide → act → observe).\n\n"       
-        "Regeln:\n"
-        "- Wenn du ein Tool brauchst: action='tool', tool_name aus Tool-Liste wählen, tool_args setzen.\n"
-        "- Wenn du direkt antworten kannst: action='respond' und final_answer setzen.\n"
-        "- Wenn das Ziel erreicht ist und keine Antwort nötig ist: action='done'.\n"
-        "- Erfinde keine Fakten. Wenn Infos fehlen: fordere Klärung an.\n"
-        "- Halte final_answer kurz und konkret.\n\n"
-        "Tool-Spezifikation:\n"
-        "- add: tool_args hat genau die Keys {\"a\": number, \"b\": number}\n"
-        "- echo: tool_args hat {\"text\": string}\n"
-        f"Tool-Liste: {tool_list}\n"
+        "Du bist ein Agenten-Controller.\n"
+        "Du gibst AUSSCHLIESSLICH gültiges JSON gemäß AgentDecision-Schema zurück.\n"
+        "Du steuerst einen Loop (decide → act → observe).\n\n"
+
+        "GRUNDREGELN:\n"
+        "1) PRIORITÄT INPUT:\n"
+        "   Verwende für Entscheidungen und tool_args primär 'current_user_input'.\n"
+        "   Ältere Memory-Inhalte dürfen Zahlen oder Parameter NICHT überschreiben.\n\n"
+
+        "2) TOOL-ERGEBNIS-REGEL:\n"
+        "   Wenn in observations ein Eintrag 'TOOL_OK <tool>: <result>' vorhanden ist\n"
+        "   UND current_user_input keine neuen Parameter enthält,\n"
+        "   dann ist das Ergebnis bekannt.\n"
+        "   → Wähle action='respond'\n"
+        "   → final_answer MUSS! auf genau dieses Ergebnis <result> gesetzt werden -> final_answer=Ergebnis\n"
+        "   → Rufe das Tool NICHT erneut auf.\n\n"
+
+        "3) TOOL-NUTZUNG:\n"
+        "   Verwende action='tool' nur, wenn eine konkrete Aktion notwendig ist.\n"
+        "   tool_args dürfen ausschließlich aus current_user_input extrahiert werden.\n\n"
+
+        "4) ANTWORTEN:\n"
+        "   Wenn du direkt antworten kannst → action='respond' mit NICHT leerem final_answer.\n"
+        "   Wenn Informationen fehlen → action='respond' mit einer konkreten Rückfrage.\n\n"
+        "   Wenn du mit einer Frage antwortest → action='respond' mit leerem final_answer.\n\n"
+
+        "5) DONE:\n"
+        "   Wenn das Ziel vollständig erreicht ist und keine weitere Antwort nötig ist → action='done'.\n\n"
+
+        "6) KEINE HALLUZINATION:\n"
+        "   Erfinde keine Fakten.\n\n"
+
+        "TOOL-SPEZIFIKATION:\n"
+        "- add: Berechnet die Summe zweier Zahlen.\n"
+        "  tool_args muss exakt {\"a\": number, \"b\": number} enthalten.\n"
+        "  Nur verwenden, wenn zwei konkrete Zahlen im current_user_input stehen.\n\n"
+
+        "- echo: Gibt Text unverändert zurück.\n"
+        "  tool_args muss exakt {\"text\": string} enthalten.\n"
+        "  Nur verwenden, wenn der Nutzer explizit um Wiederholung bittet (z.B. 'wiederhole', 'echo').\n\n"
+
+        f"VERFÜGBARE TOOLS: {tool_list}\n"
     )
 
 
@@ -75,7 +106,7 @@ def _build_user_payload(state: AgentState, cfg: AgentConfig) -> str:
 
     payload = {
         "user_goal": state.user_goal,
-      #  "current_user_input": _last_user_message(state.memory),
+        "current_user_input": _last_user_message(state.memory),
         "memory": [{"role": r, "content": c} for r, c in mem],
         "observations": state.observations[-10:],
         "iteration": state.iters,
@@ -137,6 +168,8 @@ class AgentLoop:
                 f"RISK_GATE mode={mode} risk={self.cfg.risk_level.value} conf={decision.confidence_score:.2f}"
             )
 
+        print(f"\n {state.iters}: decision.action > {decision.action} \n")
+
         # 2) Handle RESPOND
         if decision.action == AgentAction.RESPOND:
             if mode == "manual" and self.cfg.risk_level in (RiskLevel.MEDIUM, RiskLevel.HIGH):
@@ -148,8 +181,27 @@ class AgentLoop:
                 return AgentResult(status=AgentStatus.NEEDS_INPUT, message=msg, state=state, request_kind="clarify")
 
             answer = (decision.final_answer or "").strip()
+
+            if not answer:
+                # Falls wir gerade ein Tool-OK hatten, nimm dessen Ergebnis als Antwort
+                last_ok = None
+                for obs in reversed(state.observations):
+                    if obs.startswith("TOOL_OK "):
+                        last_ok = obs
+                        break
+
+                if last_ok:
+                    # Format: "TOOL_OK <tool>: <result>"
+                    # Wir nehmen alles nach dem ersten ":"
+                    parts = last_ok.split(":", 1)
+                    if len(parts) == 2:
+                        answer = parts[1].strip()
+
             if not answer:
                 answer = "Dazu fehlen mir Informationen. Kannst du präzisieren, was genau du willst?"
+                state.memory.append(("assistant", answer))
+                return AgentResult(status=AgentStatus.NEEDS_INPUT, message=answer, state=state, request_kind="clarify")
+
             state.memory.append(("assistant", answer))
             return AgentResult(status=AgentStatus.RESPONDED, message=answer, state=state)
 
@@ -181,16 +233,36 @@ class AgentLoop:
                 return AgentResult(status=AgentStatus.NEEDS_INPUT, message=f"Unbekanntes Tool: {tool_name}", state=state)
 
             try:
-                result = self.tools[tool_name](decision.tool_args or {})
+                tool_name = (decision.tool_name or "").strip()
+                args = decision.tool_args or {}
+
+                if tool_name == "add":
+                    args = AddArgs.model_validate(decision.tool_args)
+                elif tool_name == "echo":
+                    args = EchoArgs.model_validate(decision.tool_args)
+
+                tool_sig = json.dumps({"tool": tool_name, "args": args}, sort_keys=True, ensure_ascii=False)
+
+                # Guard: exakt gleicher Tool-Call direkt erneut => blocken
+                if state.last_tool_sig == tool_sig and state.last_tool_result is not None:
+                    answer = state.last_tool_result
+                    state.memory.append(("assistant", answer))
+                    return AgentResult(status=AgentStatus.RESPONDED, message=answer, state=state)
+
+                result = self.tools[tool_name](args)
                 state.observations.append(f"TOOL_OK {tool_name}: {result}")
+
+                state.last_tool_sig = tool_sig
+                state.last_tool_result = result
+
+                return AgentResult(status=AgentStatus.CONTINUE, message=f"(Tool OK) {result}", state=state)
+
             except Exception as e:
                 state.observations.append(f"TOOL_ERROR {tool_name}: {type(e).__name__}: {e}")
 
-            # Nach Tool-Aktion nicht sofort raus: CLI ruft step() erneut auf (mit None input),
-            # damit der Agent aus Observations eine Antwort ableiten kann.
-            return AgentResult(status=AgentStatus.CONTINUE, message="(Tool ausgeführt) Weiter...", state=state)
 
         # Fallback
         msg = "Unbekannte Agentenaktion."
-        state.memory.append(("assistant", msg))
+        #state.memory.append(("assistant", msg))
+        print(f"decision.action > {decision.action} \n")
         return AgentResult(status=AgentStatus.ERROR, message=msg, state=state)

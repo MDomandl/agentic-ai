@@ -14,36 +14,49 @@ def main() -> int:
     goal = input("Ziel (goal) > ").strip()
     state = agent.start(goal)
     user_input = goal
+    pending_user_input: str | None = None
 
     print("\n--- Agent Loop --- (Strg+C zum Abbruch)\n")
 
     # Interaktiv: wenn Agent needs_input liefert, fragen wir den User.
     while True:
-        res = agent.step(state, user_input=user_input)
+        res = agent.step(state, user_input=pending_user_input)
+        state = res.state
+        pending_user_input = None
 
         print(f"res.status > {res.status} \n")
         print(f"state.iters > {res.state.iters} \n")
-        print(f"res.status > {res.state.memory} \n")
+        print(f"res.state.memory > {res.state.memory} \n")
 
-        if res.status in (AgentStatus.RESPONDED, AgentStatus.DONE, AgentStatus.ERROR):
+        if res.message:
             print(f"Agent > {res.message}")
-            if res.status in (AgentStatus.DONE, AgentStatus.ERROR):
-                return 0 if res.status == AgentStatus.DONE else 2
-            # responded: Ziel evtl. noch nicht „done“ -> weiter, falls Agent noch iterieren will
-            # (hier könntest du optional breaken, wir lassen es erstmal weiterlaufen)
-            state = res.state
-            # Optional: direkt beenden nach erster Antwort
-            # return 0
 
-        # needs_input:
-        # Wenn es nur "Weiter..." nach Tool war, geben wir keinen User-Input,
-        # sondern lassen den Agent aus den Observations weiterdenken.
-        if res.message.strip() == "(Tool ausgeführt) Weiter...":
-            state = res.state
+        if res.status in (AgentStatus.ERROR):
             continue
 
-        #print(f"Agent > {res.message}")
-        user_input = input("Du > ").strip()
+        if res.status in (AgentStatus.DONE):
+            break
+
+        if res.status == AgentStatus.CONTINUE:
+            # kein User-Input nötig -> nächste Iteration macht den nächsten step()
+            continue
+
+        if res.status == AgentStatus.NEEDS_INPUT:
+            # genau hier ist der EINZIGE Ort für User input
+            pending_user_input = input("Du > ").strip()
+            continue
+
+        if res.status == AgentStatus.RESPONDED:
+            break
+            # pending_user_input = input("Du > ").strip()
+            # if pending_user_input in ("quit", "exit"):
+            #     break
+            # continue
+
+        # Fallback
+        pending_user_input = input("Du > ").strip()
+        if pending_user_input in ('quit', 'exit'):
+            break
 
 
 if __name__ == "__main__":

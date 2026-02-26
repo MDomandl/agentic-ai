@@ -11,6 +11,7 @@ class AgentState:
     memory: List[Tuple[str, str]] = field(default_factory=list)  # (role, content)
     observations: List[str] = field(default_factory=list)
     iters: int = 0
+    last_tool_sig: str | None = None
 
 
 @dataclass
